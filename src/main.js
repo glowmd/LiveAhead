@@ -1,15 +1,21 @@
 /**
  * LiveAhead — Main Entry Point
- * 
- * Registers all screens, applies the saved theme, and routes based on:
- * 1. Not logged in → login screen
- * 2. Logged in, no onboarding → welcome screen
- * 3. Logged in, onboarding complete → home screen
+ *
+ * Auth is driven entirely by supabase.auth.onAuthStateChange.
+ * This means session restores on page refresh work automatically.
+ *
+ * Routing logic:
+ *   SIGNED_IN  → load data → new user → onboarding; returning → home
+ *   SIGNED_OUT → login screen
+ *   Magic-link redirect → Supabase detects the token, fires SIGNED_IN
  */
 
 import './index.css';
 import { registerScreen, navigateTo, clearHistory } from './router.js';
 import { store, applyTheme } from './store.js';
+import { supabase } from './lib/supabase.js';
+import { updateProfile } from './lib/api/profiles.js';
+
 import { renderLogin } from './screens/login.js';
 import { renderWelcome } from './screens/welcome.js';
 import { renderGoalSelection } from './screens/goal-selection.js';
@@ -28,47 +34,104 @@ registerScreen('home', (options) => {
   const result = renderHome(options);
   return {
     ...result,
-    onMount() {
-      result.onMount?.();
-      bindNavEvents();
-    }
+    onMount() { result.onMount?.(); bindNavEvents(); }
   };
 });
 registerScreen('weekly-summary', (options) => {
   const result = renderWeeklySummary(options);
   return {
     ...result,
-    onMount() {
-      result.onMount?.();
-      bindNavEvents();
-    }
+    onMount() { result.onMount?.(); bindNavEvents(); }
   };
 });
 registerScreen('settings', (options) => {
   const result = renderSettings(options);
-  return {
-    ...result,
-    onMount() {
-      result.onMount?.();
-    }
-  };
+  return { ...result, onMount() { result.onMount?.(); } };
 });
 
-// --- Initialize ---
-function init() {
-  const state = store.getState();
-  applyTheme(state.settings.darkMode);
+// --- Auth state machine ---
+let initialized = false;
 
-  // Clear history on fresh app load
-  clearHistory();
+supabase.auth.onAuthStateChange(async (event, session) => {
+  // Apply saved theme on first load
+  const savedDarkMode = localStorage.getItem('liveahead_dark_mode') || 'auto';
+  applyTheme(savedDarkMode);
 
-  // Route based on auth + onboarding state
-  if (!store.isLoggedIn()) {
+  if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+    if (!session) return;
+
+    // Show a loading state while we hydrate
+    if (!initialized || event === 'SIGNED_IN') {
+      showLoadingScreen();
+    }
+
+    // Hydrate in-memory state from Supabase
+    await store.loadFromSupabase(session);
+
+    // Save the display_name from the magic-link form (first sign-in only)
+    const pendingName = sessionStorage.getItem('liveahead_pending_name');
+    if (pendingName) {
+      await store.setDisplayName(pendingName);
+      sessionStorage.removeItem('liveahead_pending_name');
+    }
+
+    // One-time migration from localStorage (safe to run every sign-in — it's idempotent)
+    await store.migrateFromLocalStorage(session.user.id);
+
+    clearHistory();
+    initialized = true;
+
+    // Route: new user (no onboarding) → welcome; returning → home
+    const state = store.getState();
+    if (state.onboardingComplete && state.activeHabits.length > 0) {
+      navigateTo('home');
+    } else {
+      navigateTo('welcome');
+    }
+
+  } else if (event === 'SIGNED_OUT') {
+    store.clearLocalState();
+    clearHistory();
+    initialized = false;
     navigateTo('login');
-  } else if (state.onboardingComplete && state.activeHabits.length > 0) {
-    navigateTo('home');
-  } else {
-    navigateTo('welcome');
+  }
+});
+
+// --- Fallback init for when no session exists on cold load ---
+async function init() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    // Not logged in — show login (onAuthStateChange SIGNED_OUT fires too, but this is faster)
+    const savedDarkMode = localStorage.getItem('liveahead_dark_mode') || 'auto';
+    applyTheme(savedDarkMode);
+    navigateTo('login');
+  }
+  // If session exists, onAuthStateChange SIGNED_IN fires and routes correctly
+}
+
+function showLoadingScreen() {
+  const app = document.getElementById('app');
+  if (app) {
+    app.innerHTML = `
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100dvh;
+        gap: 16px;
+      ">
+        <div style="
+          width: 56px; height: 56px;
+          background: linear-gradient(145deg, var(--color-accent), var(--color-accent-hover));
+          border-radius: 16px;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 28px;
+          animation: logoFloat 2s ease-in-out infinite;
+        ">🌿</div>
+        <p style="color: var(--color-text-tertiary); font-size: 0.875rem;">Loading your routine\u2026</p>
+      </div>
+    `;
   }
 }
 
