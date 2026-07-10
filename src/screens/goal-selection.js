@@ -1,27 +1,25 @@
 /**
  * Goal Selection Screen
  * 
- * User picks one or more of three health goals. Large cards with
- * emoji icons, multi-select with gentle check animation.
- * 
- * Design rationale: Only 3 choices, each in plain language. No scrolling
- * needed. Multi-select lets users see the compound benefit story. The
- * "Continue" button only appears after a selection, keeping the screen
- * clean until the user has committed.
+ * Three large cards with multi-select. Back button preserves state.
+ * Pre-selects saved goals when editing from settings.
  */
 
-import { navigateTo } from '../router.js';
+import { navigateTo, goBack } from '../router.js';
 import { store } from '../store.js';
 import { GOALS } from '../data/habits.js';
 
 export function renderGoalSelection() {
   const goalList = Object.values(GOALS);
   const state = store.getState();
-  // Pre-select saved goals (for edit flow from settings)
   const selected = new Set(state.goals);
 
   const html = `
     <div class="screen screen--no-nav" role="region" aria-label="Choose your health goals">
+      <button class="back-btn" id="back-btn" aria-label="Go back">
+        <span class="back-btn__arrow" aria-hidden="true">←</span> Back
+      </button>
+
       <div class="section-header">
         <span class="section-header__step">Step 1 of 2</span>
         <h1 class="section-header__title">What matters most to you?</h1>
@@ -92,6 +90,8 @@ export function renderGoalSelection() {
             card.classList.add('card--selected');
             card.setAttribute('aria-checked', 'true');
           }
+          // Persist immediately for back-nav preservation
+          store.setGoals([...selected]);
           updateAction();
         };
         card.addEventListener('click', handler);
@@ -107,6 +107,8 @@ export function renderGoalSelection() {
         store.setGoals([...selected]);
         navigateTo('routine-builder');
       });
+
+      document.getElementById('back-btn').addEventListener('click', goBack);
     }
   };
 }

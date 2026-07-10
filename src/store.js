@@ -2,12 +2,13 @@
  * LiveAhead — State Management
  * 
  * All user data persists in localStorage.
- * Provides reactive helpers for goals, habits, daily logs, and streaks.
+ * Provides reactive helpers for user auth, goals, habits, daily logs, and streaks.
  */
 
 const STORAGE_KEY = 'liveahead_data';
 
 const DEFAULT_STATE = {
+  user: null,          // { name: 'Neha', email: 'neha@example.com' } or null
   onboardingComplete: false,
   goals: [],           // ['brain', 'stress', 'heart']
   activeHabits: [],    // habit IDs: ['sleep-well', 'move-daily', ...]
@@ -17,7 +18,8 @@ const DEFAULT_STATE = {
     notificationsAsked: false,
     notificationsEnabled: false
   },
-  firstCheckOffDone: false
+  firstCheckOffDone: false,
+  shareDismissed: false  // true after user dismisses or completes share prompt
 };
 
 let state = loadState();
@@ -58,6 +60,48 @@ export const store = {
   subscribe(fn) {
     listeners.add(fn);
     return () => listeners.delete(fn);
+  },
+
+  // --- User / Auth ---
+  setUser(name, email) {
+    state.user = { name: name.trim(), email: email.trim().toLowerCase() };
+    saveState();
+    notify();
+  },
+
+  getUser() {
+    return state.user;
+  },
+
+  isLoggedIn() {
+    return state.user !== null && state.user.name && state.user.email;
+  },
+
+  logout() {
+    state.user = null;
+    state.onboardingComplete = false;
+    state.goals = [];
+    state.activeHabits = [];
+    state.logs = {};
+    state.firstCheckOffDone = false;
+    state.shareDismissed = false;
+    saveState();
+    notify();
+  },
+
+  // --- Referral ---
+  getDaysOfUse() {
+    // Count distinct dates with at least one check-off
+    return Object.keys(state.logs).filter(d => state.logs[d].length > 0).length;
+  },
+
+  shouldShowSharePrompt() {
+    return store.getDaysOfUse() >= 3 && !state.shareDismissed;
+  },
+
+  dismissSharePrompt() {
+    state.shareDismissed = true;
+    saveState();
   },
 
   // --- Onboarding ---
@@ -116,7 +160,6 @@ export const store = {
     let streak = 0;
     let date = new Date(today + 'T12:00:00');
 
-    // Check if today is done; if not, start from yesterday
     if (!store.isHabitDone(today, habitId)) {
       date.setDate(date.getDate() - 1);
     }
@@ -141,7 +184,6 @@ export const store = {
 
     if (total === 0) return 0;
 
-    // Check if today is fully done
     const todayProgress = store.getDayProgress(today);
     if (todayProgress.done < total) {
       date.setDate(date.getDate() - 1);
@@ -150,7 +192,6 @@ export const store = {
     while (true) {
       const dateStr = formatDateStr(date);
       const dayDone = (state.logs[dateStr] || []).length;
-      // Count day as streak if at least one habit was done
       if (dayDone > 0) {
         streak++;
         date.setDate(date.getDate() - 1);
@@ -179,8 +220,8 @@ export const store = {
 
   getCurrentWeekStart() {
     const today = new Date();
-    const day = today.getDay(); // 0=Sun
-    const diff = day === 0 ? 6 : day - 1; // Monday start
+    const day = today.getDay();
+    const diff = day === 0 ? 6 : day - 1;
     const monday = new Date(today);
     monday.setDate(today.getDate() - diff);
     monday.setHours(0, 0, 0, 0);
@@ -201,11 +242,9 @@ export const store = {
     const totalCompleted = habitStats.reduce((sum, h) => sum + h.daysCompleted, 0);
     const completionRate = totalPossible > 0 ? totalCompleted / totalPossible : 0;
 
-    // Best habit
     const best = habitStats.length > 0
       ? habitStats.reduce((a, b) => a.daysCompleted >= b.daysCompleted ? a : b)
       : null;
-    // Weakest habit (only if there's room to improve)
     const weakest = habitStats.length > 0
       ? habitStats.reduce((a, b) => a.daysCompleted <= b.daysCompleted ? a : b)
       : null;

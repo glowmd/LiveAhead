@@ -1,14 +1,8 @@
 /**
  * Weekly Summary Screen — The Emotional Core
  * 
- * Shows wins first, then one gentle growth area, then connects behavior
- * to the user's chosen goals. Includes a dot grid for visual glance and
- * one actionable suggestion.
- * 
- * Design rationale: The user doesn't analyze — the app tells the story
- * of their week in a warm, human voice. Wins are always first. Failures
- * are never listed. The long-term "why" paragraph ties this week to the
- * bigger picture, making the mundane feel meaningful.
+ * Wins → growth → long-term why → dot grid → suggestion.
+ * Uses the user's name for personalization.
  */
 
 import { store } from '../store.js';
@@ -21,8 +15,8 @@ export function renderWeeklySummary() {
   const activeHabits = HABITS.filter(h => state.activeHabits.includes(h.id));
   const weekData = stats.weekData;
   const selectedGoals = state.goals;
+  const userName = state.user?.name || '';
 
-  // --- Build Wins Section ---
   function buildWins() {
     if (stats.totalCompleted === 0) {
       return `
@@ -35,34 +29,44 @@ export function renderWeeklySummary() {
       `;
     }
 
-    const best = stats.bestHabit;
-    const bestHabit = HABITS.find(h => h.id === best?.habitId);
+    // Build per-habit lines
+    const habitLines = stats.habitStats
+      .filter(h => h.daysCompleted > 0)
+      .sort((a, b) => b.daysCompleted - a.daysCompleted)
+      .map(h => {
+        const habit = HABITS.find(hab => hab.id === h.habitId);
+        if (!habit) return '';
+        const dayWord = h.daysCompleted === 1 ? 'day' : 'days';
+        return `<strong>${habit.name}</strong> — ${h.daysCompleted} ${dayWord}`;
+      })
+      .filter(Boolean);
 
-    if (!bestHabit) return '';
+    const missedHabits = stats.habitStats.filter(h => h.daysCompleted === 0);
+    const allPracticed = missedHabits.length === 0;
 
-    const dayWord = best.daysCompleted === 1 ? 'day' : 'days';
+    let summaryText = '';
+    if (habitLines.length === 1) {
+      summaryText = `You practiced ${habitLines[0]} this week. That counts.`;
+    } else if (habitLines.length <= 3) {
+      summaryText = `Here's how your habits shaped up: ${habitLines.join(', ')}. ${allPracticed ? 'Every single habit got attention — well done.' : `Across all habits, you logged <strong>${stats.totalCompleted} total check-offs</strong>. Each one mattered.`}`;
+    } else {
+      summaryText = `You logged <strong>${stats.totalCompleted} check-offs</strong> across <strong>${habitLines.length} habits</strong> this week. Here's the breakdown: ${habitLines.join(' · ')}. ${allPracticed ? 'Every habit got time this week.' : 'Every one of those counted.'}`;
+    }
 
     return `
       <div class="weekly-summary__section">
         <h3 class="weekly-summary__section-title">Your Wins</h3>
-        <p class="weekly-summary__text">
-          You practiced <strong>${bestHabit.name.toLowerCase()}</strong> ${best.daysCompleted} out of 7 ${dayWord} — your most consistent habit this week.
-          ${stats.totalCompleted > best.daysCompleted
-            ? ` Across all habits, you logged <strong>${stats.totalCompleted} total check-offs</strong>. Each one mattered.`
-            : ' Every single one of those counted.'}
-        </p>
+        <p class="weekly-summary__text">${summaryText}</p>
       </div>
     `;
   }
 
-  // --- Build Growth Section ---
   function buildGrowth() {
     if (stats.totalCompleted === 0) return '';
 
     const weakest = stats.weakestHabit;
     const weakestHabit = HABITS.find(h => h.id === weakest?.habitId);
 
-    // Don't show growth if everything was perfect or we have the same best/weakest
     if (!weakestHabit || weakest.daysCompleted === stats.bestHabit.daysCompleted) {
       return `
         <div class="weekly-summary__section">
@@ -95,31 +99,23 @@ export function renderWeeklySummary() {
     `;
   }
 
-  // --- Build Long-Term Why ---
   function buildWhy() {
     if (stats.totalCompleted === 0) return '';
 
-    const goalNames = selectedGoals.map(g => GOALS[g]?.name).filter(Boolean);
-    const goalText = goalNames.length === 1
-      ? goalNames[0].toLowerCase()
-      : goalNames.length === 2
-        ? `${goalNames[0].toLowerCase()} and ${goalNames[1].toLowerCase()}`
-        : goalNames.map((g, i) => i === goalNames.length - 1 ? `and ${g.toLowerCase()}` : g.toLowerCase()).join(', ');
-
     const bestHabit = HABITS.find(h => h.id === stats.bestHabit?.habitId);
     const habitName = bestHabit ? bestHabit.name.toLowerCase() : 'your habits';
+    const nameRef = userName ? `, ${userName}` : '';
 
-    // Build a warm, goal-connected paragraph
     let whyText = '';
     
     if (selectedGoals.includes('brain') && selectedGoals.includes('heart')) {
-      whyText = `Those ${stats.bestHabit.daysCompleted} days of ${habitName} are doing double duty — protecting your heart and your brain. This is exactly how healthy years get built: quietly, one week at a time.`;
+      whyText = `Those ${stats.bestHabit.daysCompleted} days of ${habitName} are doing double duty — protecting your heart and your brain. This is exactly how healthy years get built${nameRef}: quietly, one week at a time.`;
     } else if (selectedGoals.includes('brain')) {
-      whyText = `Every day of ${habitName} is a deposit into your long-term brain health. Research is clear: small, consistent actions like these are what keep minds sharp for decades. You're building something that matters.`;
+      whyText = `Every day of ${habitName} is a deposit into your long-term brain health. Research is clear: small, consistent actions like these are what keep minds sharp for decades. You're building something that matters${nameRef}.`;
     } else if (selectedGoals.includes('stress')) {
       whyText = `This week's consistency with ${habitName} is your nervous system's best friend. The calm you're building isn't just for today — it compounds, making each week a little easier than the last.`;
     } else if (selectedGoals.includes('heart')) {
-      whyText = `Each day of ${habitName} is quietly strengthening your cardiovascular health. The research is powerful: these small daily choices add up to significantly more healthy years. Keep going.`;
+      whyText = `Each day of ${habitName} is quietly strengthening your cardiovascular health. The research is powerful: these small daily choices add up to significantly more healthy years. Keep going${nameRef}.`;
     } else {
       whyText = `These daily habits are quietly working in the background, adding healthy years one week at a time. Consistency beats intensity, and you're proving it.`;
     }
@@ -132,7 +128,6 @@ export function renderWeeklySummary() {
     `;
   }
 
-  // --- Build Week Dot Grid ---
   function buildDotGrid() {
     if (activeHabits.length === 0) return '';
 
@@ -161,7 +156,6 @@ export function renderWeeklySummary() {
     `;
   }
 
-  // --- Build Suggestion ---
   function buildSuggestion() {
     if (stats.totalCompleted === 0) {
       return `
@@ -171,34 +165,50 @@ export function renderWeeklySummary() {
       `;
     }
 
-    const weakest = stats.weakestHabit;
-    const weakestHabit = HABITS.find(h => h.id === weakest?.habitId);
     const rate = stats.completionRate;
 
+    // Find the least consistent habit (lowest completion)
+    const sorted = [...stats.habitStats].sort((a, b) => a.daysCompleted - b.daysCompleted);
+    const weakest = sorted[0];
+    const strongest = sorted[sorted.length - 1];
+    const weakestHabit = HABITS.find(h => h.id === weakest?.habitId);
+
+    // All habits are very consistent — encourage daily goals + consider adding more
     if (rate >= 0.85) {
       return `
-        <div class="suggestion-card" id="suggestion-card" role="button" tabindex="0" aria-label="Keep your routine as is">
-          <p class="suggestion-card__text">✨ Keep it exactly as is — this rhythm is working beautifully</p>
+        <div class="suggestion-card" id="suggestion-card" role="button" tabindex="0" aria-label="You're doing great — consider adding a new habit">
+          <p class="suggestion-card__text">🌟 You're crushing it. Keep meeting your daily goals, and when you're ready, think about adding a new habit — you've clearly got the rhythm for it.</p>
         </div>
       `;
     }
 
-    if (weakestHabit) {
+    // There's a clear weakest habit — suggest focusing on it
+    if (weakestHabit && weakest.daysCompleted < strongest.daysCompleted) {
+      const dayWord = weakest.daysCompleted === 1 ? 'day' : 'days';
+      const contextText = weakest.daysCompleted === 0
+        ? `didn't make it into the week`
+        : `only landed on ${weakest.daysCompleted} ${dayWord}`;
+
       return `
         <div class="suggestion-card" id="suggestion-card" role="button" tabindex="0" aria-label="Focus on ${weakestHabit.name} next week">
-          <p class="suggestion-card__text">🎯 Next week's focus: <strong>${weakestHabit.name}</strong></p>
+          <p class="suggestion-card__text">🎯 Next week's focus: <strong>${weakestHabit.name}</strong> — it ${contextText}. Even one more day makes a difference.</p>
         </div>
       `;
     }
 
-    return '';
+    // All habits are equally consistent but below 85%
+    return `
+      <div class="suggestion-card" id="suggestion-card" role="button" tabindex="0" aria-label="Keep building consistency">
+        <p class="suggestion-card__text">🎯 All your habits are moving together — keep showing up daily. Consistency is the whole game.</p>
+      </div>
+    `;
   }
 
   const html = `
     <div class="screen" role="region" aria-label="Weekly summary">
-      <div class="section-header mb-6">
+      <div class="section-header mb-5">
         <h1 class="section-header__title">Your Week</h1>
-        <p class="section-header__desc">Here's how your week shaped up.</p>
+        <p class="section-header__desc">Here's how your week shaped up${userName ? `, ${userName}` : ''}.</p>
       </div>
 
       <div class="weekly-summary">

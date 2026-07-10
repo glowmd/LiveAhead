@@ -1,19 +1,20 @@
 /**
  * Welcome Screen
  * 
- * First screen the user sees. Zero decisions — just a warm greeting,
- * the tagline, and a single "Get started" button.
- * 
- * Design rationale: Reduces mental load to zero. The user sees exactly
- * what LiveAhead does and has one clear action. The floating logo and
- * warm copy set the calm, encouraging tone from the first moment.
+ * Tagline, single "Get started" button. Back button to login.
+ * Zero decisions — maximum warmth.
  */
 
-import { navigateTo } from '../router.js';
+import { navigateTo, goBack, canGoBack } from '../router.js';
 
 export function renderWelcome() {
+  const backBtn = canGoBack()
+    ? `<button class="back-btn" id="back-btn" aria-label="Go back"><span class="back-btn__arrow" aria-hidden="true">←</span></button>`
+    : '';
+
   const html = `
     <div class="welcome screen--no-nav" role="region" aria-label="Welcome to LiveAhead">
+      ${backBtn}
       <div class="welcome__logo" aria-hidden="true">
         <span class="welcome__logo-icon">🌿</span>
       </div>
@@ -37,6 +38,7 @@ export function renderWelcome() {
       document.getElementById('welcome-start-btn').addEventListener('click', () => {
         navigateTo('goal-selection');
       });
+      document.getElementById('back-btn')?.addEventListener('click', goBack);
     }
   };
 }
