@@ -1,29 +1,26 @@
 /**
- * LiveAhead — State Management (Supabase-backed)
+ * LiveAhead — State Management (Simple Email Auth, Supabase-backed)
  *
- * Single source of truth. In-memory state is loaded from Supabase
- * on session start and written back on every change.
- * localStorage is only used for dark-mode preference (non-sensitive UI pref).
+ * User identity comes from localStorage (set by simple-auth.js).
+ * All habit data is read/written to Supabase keyed by user UUID.
+ * No Supabase Auth sessions — just the anon key.
  *
- * Architecture:
- *   - supabase.auth.onAuthStateChange drives routing in main.js
- *   - store.loadFromSupabase() hydrates in-memory state after sign-in
- *   - All writes go to Supabase immediately; in-memory mirrors for fast reads
+ * localStorage keys:
+ *   liveahead_user      — { id, email, display_name }
+ *   liveahead_dark_mode — 'auto' | 'light' | 'dark'
  */
 
 import { supabase } from './lib/supabase.js';
+import { getLocalUser, signOut as simpleSignOut } from './lib/api/simple-auth.js';
 import { getAllLogs, logHabit, unlogHabit, bulkInsertLogs } from './lib/api/logs.js';
 import { getUserSettings, upsertUserSettings } from './lib/api/user-settings.js';
-import { updateProfile } from './lib/api/profiles.js';
 
 const LEGACY_STORAGE_KEY = 'liveahead_data';
 const DARK_MODE_KEY = 'liveahead_dark_mode';
 
-// In-memory state — populated from Supabase after login
+// In-memory state
 let state = {
-  // Auth
-  session: null,          // Supabase session object
-  user: null,             // { id, name, email }
+  user: null,           // { id, email, name } — from app_users table
 
   // Settings (from user_settings table)
   onboardingComplete: false,
@@ -31,14 +28,12 @@ let state = {
   activeHabits: [],
   shareDismissed: false,
 
-  // Logs (from habit_logs table) — keyed by date: { 'YYYY-MM-DD': ['habitId'] }
+  // Logs — keyed by date: { 'YYYY-MM-DD': ['habitId', ...] }
   logs: {},
 
-  // UI only — kept in localStorage
+  // UI-only
   settings: {
     darkMode: localStorage.getItem(DARK_MODE_KEY) || 'auto',
-    notificationsAsked: false,
-    notificationsEnabled: false,
   },
   firstCheckOffDone: false,
 };
@@ -52,9 +47,7 @@ function notify() {
 // --- Public Store API ---
 
 export const store = {
-  getState() {
-    return state;
-  },
+  getState() { return state; },
 
   subscribe(fn) {
     listeners.add(fn);
@@ -62,46 +55,38 @@ export const store = {
   },
 
   // -------------------------------------------------------
-  // Auth helpers (thin wrappers — real auth is in lib/api/auth.js)
+  // User helpers
   // -------------------------------------------------------
-  getUser() {
-    return state.user;
-  },
-
-  isLoggedIn() {
-    return state.session !== null && state.user !== null;
-  },
-
-  getSession() {
-    return state.session;
-  },
-
-  // Called by main.js onAuthStateChange
-  setSession(session) {
-    state.session = session;
-  },
+  getUser() { return state.user; },
+  isLoggedIn() { return state.user !== null; },
 
   // -------------------------------------------------------
-  // Load all data from Supabase after sign-in
+  // Initialise from localStorage (cold start — no network)
+  // Returns true if a cached user exists.
   // -------------------------------------------------------
-  async loadFromSupabase(session) {
-    if (!session) return;
-    state.session = session;
-    const userId = session.user.id;
-
-    // Load profile — use maybeSingle() so a missing row (new user, trigger race)
-    // returns null instead of throwing a PGRST116 error
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id, display_name')
-      .eq('id', userId)
-      .maybeSingle();
-
+  initFromLocalStorage() {
+    const cached = getLocalUser();
+    if (!cached) return false;
     state.user = {
-      id: userId,
-      name: profile?.display_name || session.user.email?.split('@')[0] || '',
-      email: session.user.email || '',
+      id: cached.id,
+      email: cached.email,
+      name: cached.display_name || cached.email.split('@')[0],
     };
+    notify();
+    return true;
+  },
+
+  // -------------------------------------------------------
+  // Load all Supabase data for a user after login/cold-start
+  // -------------------------------------------------------
+  async loadForUser(appUser) {
+    state.user = {
+      id: appUser.id,
+      email: appUser.email,
+      name: appUser.display_name || appUser.email.split('@')[0],
+    };
+
+    const userId = appUser.id;
 
     // Load settings
     const { data: settings } = await getUserSettings(userId);
@@ -120,20 +105,22 @@ export const store = {
     const { data: logs } = await getAllLogs(userId);
     state.logs = logs || {};
 
+    // One-time localStorage migration
+    await store.migrateFromLocalStorage(userId);
+
     notify();
   },
 
   // -------------------------------------------------------
-  // One-time localStorage → Supabase migration
+  // One-time migration: old localStorage data → Supabase
   // -------------------------------------------------------
   async migrateFromLocalStorage(userId) {
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return; // nothing to migrate
+    if (!raw) return;
 
     let legacy;
     try { legacy = JSON.parse(raw); } catch { return; }
 
-    // Only migrate if there's real data
     const hasData = (
       (legacy.goals?.length > 0) ||
       (legacy.activeHabits?.length > 0) ||
@@ -141,11 +128,10 @@ export const store = {
     );
     if (!hasData) { localStorage.removeItem(LEGACY_STORAGE_KEY); return; }
 
-    console.log('LiveAhead: Migrating localStorage data to Supabase...');
+    console.log('LiveAhead: Migrating old localStorage data to Supabase...');
 
-    // Migrate settings (only if user hasn't set anything in Supabase yet)
-    const { data: existingSettings } = await getUserSettings(userId);
-    if (!existingSettings || (!existingSettings.onboarding_complete && !(existingSettings.goals?.length))) {
+    const { data: existing } = await getUserSettings(userId);
+    if (!existing || (!existing.onboarding_complete && !(existing.goals?.length))) {
       await upsertUserSettings(userId, {
         goals: legacy.goals || [],
         active_habits: legacy.activeHabits || [],
@@ -153,23 +139,26 @@ export const store = {
         share_dismissed: legacy.shareDismissed || false,
         dark_mode: legacy.settings?.darkMode || 'auto',
       });
+      state.goals = legacy.goals || [];
+      state.activeHabits = legacy.activeHabits || [];
+      state.onboardingComplete = legacy.onboardingComplete || false;
     }
 
-    // Migrate logs
     if (Object.keys(legacy.logs || {}).length > 0) {
       await bulkInsertLogs(userId, legacy.logs);
+      const { data: freshLogs } = await getAllLogs(userId);
+      state.logs = freshLogs || {};
     }
 
-    // Clear localStorage only after successful migration
     localStorage.removeItem(LEGACY_STORAGE_KEY);
     console.log('LiveAhead: Migration complete.');
   },
 
   // -------------------------------------------------------
-  // Reset in-memory state on sign-out (do NOT delete Supabase data)
+  // Sign out — clears local state, Supabase data is kept
   // -------------------------------------------------------
-  clearLocalState() {
-    state.session = null;
+  signOut() {
+    simpleSignOut(); // clears liveahead_user from localStorage
     state.user = null;
     state.onboardingComplete = false;
     state.goals = [];
@@ -178,6 +167,27 @@ export const store = {
     state.logs = {};
     state.firstCheckOffDone = false;
     notify();
+  },
+
+  // -------------------------------------------------------
+  // Goals & Habits
+  // -------------------------------------------------------
+  async setGoals(goalIds) {
+    state.goals = [...goalIds];
+    notify();
+    if (state.user?.id) await upsertUserSettings(state.user.id, { goals: state.goals });
+  },
+
+  async setActiveHabits(habitIds) {
+    state.activeHabits = [...habitIds];
+    notify();
+    if (state.user?.id) await upsertUserSettings(state.user.id, { active_habits: state.activeHabits });
+  },
+
+  async completeOnboarding() {
+    state.onboardingComplete = true;
+    notify();
+    if (state.user?.id) await upsertUserSettings(state.user.id, { onboarding_complete: true });
   },
 
   // -------------------------------------------------------
@@ -194,36 +204,7 @@ export const store = {
   async dismissSharePrompt() {
     state.shareDismissed = true;
     notify();
-    if (state.user?.id) {
-      await upsertUserSettings(state.user.id, { share_dismissed: true });
-    }
-  },
-
-  // -------------------------------------------------------
-  // Goals & Habits
-  // -------------------------------------------------------
-  async setGoals(goalIds) {
-    state.goals = [...goalIds];
-    notify();
-    if (state.user?.id) {
-      await upsertUserSettings(state.user.id, { goals: state.goals });
-    }
-  },
-
-  async setActiveHabits(habitIds) {
-    state.activeHabits = [...habitIds];
-    notify();
-    if (state.user?.id) {
-      await upsertUserSettings(state.user.id, { active_habits: state.activeHabits });
-    }
-  },
-
-  async completeOnboarding() {
-    state.onboardingComplete = true;
-    notify();
-    if (state.user?.id) {
-      await upsertUserSettings(state.user.id, { onboarding_complete: true });
-    }
+    if (state.user?.id) await upsertUserSettings(state.user.id, { share_dismissed: true });
   },
 
   // -------------------------------------------------------
@@ -236,12 +217,10 @@ export const store = {
     const userId = state.user?.id;
 
     if (isDone) {
-      // Optimistic remove
       state.logs[dateStr] = state.logs[dateStr].filter(id => id !== habitId);
       notify();
       if (userId) await unlogHabit(userId, habitId, dateStr);
     } else {
-      // Optimistic add
       state.logs[dateStr].push(habitId);
       if (!state.firstCheckOffDone) state.firstCheckOffDone = true;
       notify();
@@ -288,13 +267,10 @@ export const store = {
     let streak = 0;
     let date = new Date(today + 'T12:00:00');
     const total = state.activeHabits.length;
-
     if (total === 0) return 0;
 
     const todayProgress = store.getDayProgress(today);
-    if (todayProgress.done < total) {
-      date.setDate(date.getDate() - 1);
-    }
+    if (todayProgress.done < total) date.setDate(date.getDate() - 1);
 
     while (true) {
       const dateStr = formatDateStr(date);
@@ -350,51 +326,48 @@ export const store = {
     const totalPossible = habits.length * 7;
     const totalCompleted = habitStats.reduce((sum, h) => sum + h.daysCompleted, 0);
     const completionRate = totalPossible > 0 ? totalCompleted / totalPossible : 0;
-
-    const best = habitStats.length > 0
-      ? habitStats.reduce((a, b) => a.daysCompleted >= b.daysCompleted ? a : b)
-      : null;
-    const weakest = habitStats.length > 0
-      ? habitStats.reduce((a, b) => a.daysCompleted <= b.daysCompleted ? a : b)
-      : null;
+    const best = habitStats.length > 0 ? habitStats.reduce((a, b) => a.daysCompleted >= b.daysCompleted ? a : b) : null;
+    const weakest = habitStats.length > 0 ? habitStats.reduce((a, b) => a.daysCompleted <= b.daysCompleted ? a : b) : null;
 
     return { weekData, habitStats, totalCompleted, totalPossible, completionRate, bestHabit: best, weakestHabit: weakest };
   },
 
   // -------------------------------------------------------
-  // Settings (dark mode goes to both localStorage + Supabase)
+  // Settings
   // -------------------------------------------------------
   async setDarkMode(mode) {
     state.settings.darkMode = mode;
     localStorage.setItem(DARK_MODE_KEY, mode);
     applyTheme(mode);
     notify();
-    if (state.user?.id) {
-      await upsertUserSettings(state.user.id, { dark_mode: mode });
-    }
+    if (state.user?.id) await upsertUserSettings(state.user.id, { dark_mode: mode });
   },
 
   shouldAskNotifications() {
-    return state.firstCheckOffDone && !state.settings.notificationsAsked;
+    return state.firstCheckOffDone && !state.settings?.notificationsAsked;
   },
 
   markNotificationsAsked() {
+    if (!state.settings) state.settings = {};
     state.settings.notificationsAsked = true;
   },
 
   // -------------------------------------------------------
-  // Profile
+  // Display name
   // -------------------------------------------------------
   async setDisplayName(name) {
     if (state.user) state.user.name = name;
     notify();
     if (state.user?.id) {
-      await updateProfile(state.user.id, { display_name: name });
+      await supabase
+        .from('app_users')
+        .update({ display_name: name })
+        .eq('id', state.user.id);
     }
   },
 
   // -------------------------------------------------------
-  // Reset (wipes Supabase data for this user)
+  // Reset (deletes Supabase data, signs out)
   // -------------------------------------------------------
   async resetAll() {
     const userId = state.user?.id;
@@ -407,7 +380,7 @@ export const store = {
         share_dismissed: false,
       });
     }
-    store.clearLocalState();
+    store.signOut();
   },
 };
 
@@ -427,18 +400,11 @@ export function formatDateStr(date) {
 
 export function formatDisplayDate(dateStr) {
   const date = new Date(dateStr + 'T12:00:00');
-  return date.toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
-  });
+  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-export function isToday(dateStr) {
-  return dateStr === getTodayStr();
-}
-
-export function isFuture(dateStr) {
-  return dateStr > getTodayStr();
-}
+export function isToday(dateStr) { return dateStr === getTodayStr(); }
+export function isFuture(dateStr) { return dateStr > getTodayStr(); }
 
 // --- Theme ---
 

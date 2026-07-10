@@ -7,7 +7,6 @@
 
 import { navigateTo } from '../router.js';
 import { store } from '../store.js';
-import { supabase } from '../lib/supabase.js';
 import { renderBottomNav, bindNavEvents } from './nav.js';
 import { showReferralDialog } from './referral.js';
 
@@ -123,11 +122,11 @@ export function renderSettings() {
       document.getElementById('settings-logout')?.addEventListener('click', () => {
         showDialog(
           'Log out?',
-          'Your progress is safely saved. You can sign back in any time with a magic link.',
+          'Your progress is safely saved to your account. Sign back in with the same email any time.',
           'Log out',
-          async () => {
-            await supabase.auth.signOut();
-            // onAuthStateChange SIGNED_OUT in main.js handles routing
+          () => {
+            store.signOut();
+            navigateTo('login');
           }
         );
       });
@@ -135,11 +134,11 @@ export function renderSettings() {
       document.getElementById('settings-reset')?.addEventListener('click', () => {
         showDialog(
           'Start fresh?',
-          "This will permanently delete all your goals, habits, and progress from LiveAhead. This can\u2019t be undone.",
+          "This will permanently delete all your goals, habits, and progress. This can\u2019t be undone.",
           'Delete everything',
           async () => {
             await store.resetAll();
-            await supabase.auth.signOut();
+            navigateTo('login');
           },
           true
         );

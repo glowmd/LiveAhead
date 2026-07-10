@@ -40,7 +40,7 @@ export async function upsertUserSettings(userId, updates) {
       { onConflict: 'user_id' }
     )
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     return { data: null, error: { message: 'Could not save settings.', raw: error } };
