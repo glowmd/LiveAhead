@@ -20,6 +20,11 @@ comment on table public.habit_logs is 'Daily habit check-offs keyed by user, hab
 
 alter table public.habit_logs enable row level security;
 
+-- Drop existing policies if they exist before recreating
+drop policy if exists "Users can view their own logs" on public.habit_logs;
+drop policy if exists "Users can insert their own logs" on public.habit_logs;
+drop policy if exists "Users can delete their own logs" on public.habit_logs;
+
 create policy "Users can view their own logs"
   on public.habit_logs for select
   using (auth.uid() = user_id);
@@ -50,6 +55,11 @@ comment on table public.user_settings is 'Per-user app settings: goals, habits, 
 
 alter table public.user_settings enable row level security;
 
+-- Drop existing policies if they exist before recreating
+drop policy if exists "Users can view their own settings" on public.user_settings;
+drop policy if exists "Users can upsert their own settings" on public.user_settings;
+drop policy if exists "Users can update their own settings" on public.user_settings;
+
 create policy "Users can view their own settings"
   on public.user_settings for select
   using (auth.uid() = user_id);
@@ -63,13 +73,17 @@ create policy "Users can update their own settings"
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
--- Auto-create settings row alongside profile on signup
+-- =============================================
+-- 3. UPDATE SIGNUP TRIGGER TO ALSO CREATE user_settings
+-- This replaces the trigger from migration 001.
+-- =============================================
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer set search_path = ''
 as $$
 begin
+  -- Create the profile row (idempotent)
   insert into public.profiles (id, display_name)
   values (
     new.id,
@@ -77,6 +91,7 @@ begin
   )
   on conflict (id) do nothing;
 
+  -- Create the settings row (idempotent)
   insert into public.user_settings (user_id)
   values (new.id)
   on conflict (user_id) do nothing;
@@ -84,3 +99,9 @@ begin
   return new;
 end;
 $$;
+
+-- Backfill user_settings for any existing users who signed up before this migration
+insert into public.user_settings (user_id)
+select id from public.profiles
+where id not in (select user_id from public.user_settings)
+on conflict (user_id) do nothing;

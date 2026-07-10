@@ -57,13 +57,22 @@ supabase.auth.onAuthStateChange(async (event, session) => {
   const savedDarkMode = localStorage.getItem('liveahead_dark_mode') || 'auto';
   applyTheme(savedDarkMode);
 
-  if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-    if (!session) return;
+  if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+    if (!session) {
+      // INITIAL_SESSION with no session = not logged in
+      navigateTo('login');
+      return;
+    }
 
     // Show a loading state while we hydrate
-    if (!initialized || event === 'SIGNED_IN') {
+    if (!initialized) {
       showLoadingScreen();
     }
+
+    // Ensure profile row exists (trigger may not have run yet for new users)
+    await supabase
+      .from('profiles')
+      .upsert({ id: session.user.id, display_name: session.user.user_metadata?.display_name || '' }, { onConflict: 'id', ignoreDuplicates: true });
 
     // Hydrate in-memory state from Supabase
     await store.loadFromSupabase(session);
@@ -97,16 +106,11 @@ supabase.auth.onAuthStateChange(async (event, session) => {
   }
 });
 
-// --- Fallback init for when no session exists on cold load ---
-async function init() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    // Not logged in — show login (onAuthStateChange SIGNED_OUT fires too, but this is faster)
-    const savedDarkMode = localStorage.getItem('liveahead_dark_mode') || 'auto';
-    applyTheme(savedDarkMode);
-    navigateTo('login');
-  }
-  // If session exists, onAuthStateChange SIGNED_IN fires and routes correctly
+// --- Init: apply theme immediately; INITIAL_SESSION handles routing ---
+function init() {
+  const savedDarkMode = localStorage.getItem('liveahead_dark_mode') || 'auto';
+  applyTheme(savedDarkMode);
+  // onAuthStateChange fires INITIAL_SESSION on load for both authed and non-authed states
 }
 
 function showLoadingScreen() {

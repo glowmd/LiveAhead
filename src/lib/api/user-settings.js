@@ -17,12 +17,7 @@ export async function getUserSettings(userId) {
     .from('user_settings')
     .select('*')
     .eq('user_id', userId)
-    .single();
-
-  if (error && error.code === 'PGRST116') {
-    // Row doesn't exist yet — return empty defaults
-    return { data: null, error: null };
-  }
+    .maybeSingle();
 
   if (error) {
     return { data: null, error: { message: 'Could not load settings.', raw: error } };

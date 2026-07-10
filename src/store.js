@@ -89,12 +89,13 @@ export const store = {
     state.session = session;
     const userId = session.user.id;
 
-    // Load profile (display_name = user's name)
+    // Load profile — use maybeSingle() so a missing row (new user, trigger race)
+    // returns null instead of throwing a PGRST116 error
     const { data: profile } = await supabase
       .from('profiles')
       .select('id, display_name')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
     state.user = {
       id: userId,
